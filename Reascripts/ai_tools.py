@@ -27,36 +27,39 @@ FLASK_URL = "http://127.0.0.1:5000"
 
 def get_selected_track_file():
     """Get the audio file path from the first selected track in Reaper."""
-    track = RPR.GetSelectedTrack(0, 0)
+    track = RPR_GetSelectedTrack(0, 0)
     if not track:
         RPR.ShowMessageBox("No track selected.\nPlease select a track first.", "ReaForge", 0)
         return None
 
-    item = RPR.GetTrackMediaItem(track, 0)
+    item = RPR_GetTrackMediaItem(track, 0)
     if not item:
-        RPR.ShowMessageBox("No media item found on selected track.", "ReaForge", 0)
+        RPR_ShowMessageBox("No media item found on selected track.", "ReaForge", 0)
         return None
 
-    take = RPR.GetActiveTake(item)
+    take = RPR_GetActiveTake(item)
     if not take:
-        RPR.ShowMessageBox("No active take found.", "ReaForge", 0)
+        RPR_ShowMessageBox("No active take found.", "ReaForge", 0)
         return None
 
-    source = RPR.GetMediaItemTake_Source(take)
-    filename = RPR.GetMediaSourceFileName(source, "", 512)[1]
+    source = RPR_GetMediaItemTake_Source(take)
+    filename = RPR_GetMediaSourceFileName(source, "", 512)[1]
     return filename
 
 
 def import_files_to_reaper(file_paths):
-    """Import a list of audio/MIDI files as new tracks in Reaper."""
     for path in file_paths:
         if os.path.exists(path):
-            RPR.InsertMedia(path, 0)
+            RPR_SetOnlyTrackSelected(RPR_GetSelectedTrack(0, 0))
+            RPR_InsertMedia(path, 1)
+        else:
+            RPR_ShowConsoleMsg(f"ReaForge: File not found: {path}\n")
 
 
 # ─────────────────────────────────────────────
 # FLASK COMMUNICATION
 # ─────────────────────────────────────────────
+'''
 
 def call_flask(endpoint, payload):
     """Send a POST request to the Flask backend and return the JSON response."""
@@ -73,7 +76,7 @@ def call_flask(endpoint, payload):
         response = urllib.request.urlopen(req, timeout=120)
         return json.loads(response.read())
     except urllib.error.URLError:
-        RPR.ShowMessageBox(
+        RPR_ShowMessageBox(
             "Cannot connect to ReaForge backend.\n\n"
             "Make sure your Flask server is running:\n"
             "  cd Backend\n"
@@ -82,8 +85,38 @@ def call_flask(endpoint, payload):
         )
         return None
     except Exception as e:
-        RPR.ShowMessageBox(f"Error: {str(e)}", "ReaForge", 0)
+        RPR_ShowMessageBox(f"Error: {str(e)}", "ReaForge", 0)
         return None
+'''
+
+def call_flask(endpoint, filepath):
+    import urllib.request
+    url = f"{FLASK_URL}/{endpoint}"
+
+    # Read the file and send it as multipart form data
+    with open(filepath, 'rb') as f:
+        file_data = f.read()
+
+    filename = os.path.basename(filepath)
+    boundary = b'----FormBoundary'
+
+    body = (
+            b'------FormBoundary\r\n'
+            b'Content-Disposition: form-data; name="file"; filename="' + filename.encode() + b'"\r\n'
+                                                                                             b'Content-Type: audio/wav\r\n\r\n' +
+            file_data +
+            b'\r\n------FormBoundary--\r\n'
+    )
+
+    req = urllib.request.Request(
+        url, data=body,
+        headers={
+            'Content-Type': 'multipart/form-data; boundary=----FormBoundary',
+            'Accept': 'application/json'
+        }
+    )
+    response = urllib.request.urlopen(req, timeout=300)
+    return json.loads(response.read().decode('utf-8', errors='ignore'))
 
 
 def check_backend_running():
@@ -101,29 +134,34 @@ def check_backend_running():
 
 def separate_stems(filepath):
     """Send audio file to Flask for stem separation, then import stems into Reaper."""
-    RPR.ShowMessageBox("Separating stems...\nThis may take 30–120 seconds.", "ReaForge", 0)
-
-    result = call_flask("separate", {"file": filepath})
+    #RPR_ShowMessageBox("Separating stems...\nThis may take 30–120 seconds.", "ReaForge", 0)
+    RPR_ShowConsoleMsg("ReaForge: Separating stems, please wait...\n")
+    result = call_flask("separate", filepath)
+    RPR_ShowConsoleMsg(f"ReaForge result: {str(result)}\n")  # ADD THIS
     if result and "stems" in result:
         import_files_to_reaper(result["stems"])
-        RPR.ShowMessageBox(
+        if "bpm" in result:
+            RPR_SetCurrentBPM(0, result["bpm"], True)
+        RPR_ShowMessageBox(
             f"Done! {len(result['stems'])} stems imported into Reaper.",
             "ReaForge ✓", 0
         )
     else:
-        RPR.ShowMessageBox("Stem separation failed. Check the Flask server log.", "ReaForge", 0)
+        RPR_ShowMessageBox("Stem separation failed. Check the Flask server log.", "ReaForge", 0)
 
 
 def extract_midi(filepath):
     """Send audio file to Flask for MIDI extraction, then import the .mid file."""
-    RPR.ShowMessageBox("Extracting MIDI...\nThis may take a moment.", "ReaForge", 0)
+    RPR_ShowMessageBox("Extracting MIDI...\nThis may take a moment.", "ReaForge", 0)
 
-    result = call_flask("extract_midi", {"file": filepath})
+    result = call_flask("extract_midi", filepath)
     if result and "midi" in result:
         import_files_to_reaper([result["midi"]])
-        RPR.ShowMessageBox("Done! MIDI file imported into Reaper.", "ReaForge ✓", 0)
+        if "bpm" in result:
+            RPR_SetCurrentBPM(0, result["bpm"], True)
+        RPR_ShowMessageBox("Done! MIDI file imported into Reaper.", "ReaForge ✓", 0)
     else:
-        RPR.ShowMessageBox("MIDI extraction failed. Check the Flask server log.", "ReaForge", 0)
+        RPR_ShowMessageBox("MIDI extraction failed. Check the Flask server log.", "ReaForge", 0)
 
 
 def open_panel(filepath):
@@ -133,7 +171,7 @@ def open_panel(filepath):
     Falls back to a simple message box if the panel script is not found.
     """
     panel_script = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
+        os.path.dirname(os.path.abspath(__name__)),
         "..", "Frontend", "panel.py"
     )
 
@@ -141,10 +179,10 @@ def open_panel(filepath):
         subprocess.Popen([sys.executable, panel_script, filepath])
     else:
         # Fallback: simple dialog if panel.py doesn't exist yet
-        choice = RPR.ShowMessageBox(
+        choice = RPR_ShowMessageBox(
             "Choose an action:\n\n"
-            "OK  → Separate Stems\n"
-            "Cancel → Extract MIDI",
+            "OK  = Separate Stems\n"
+            "Cancel = Extract MIDI",
             "ReaForge", 1
         )
         if choice == 1:
@@ -163,7 +201,7 @@ def main():
         return
 
     if not os.path.exists(filepath):
-        RPR.ShowMessageBox(
+        RPR_ShowMessageBox(
             f"File not found:\n{filepath}\n\nMake sure the audio file exists on disk.",
             "ReaForge", 0
         )

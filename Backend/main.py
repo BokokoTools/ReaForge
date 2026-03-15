@@ -5,6 +5,9 @@ import zipfile
 from flask import Flask, request, jsonify, send_file
 import os
 import sys
+import librosa
+import pretty_midi
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -49,12 +52,28 @@ def separate():
     if not os.path.exists(stem_dir):
         return jsonify({"error": "Output not found"}), 500
 
-    zip_path = os.path.join(OUTPUT_FOLDER, uid + "_stems.zip")
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        for stem_file in os.listdir(stem_dir):
-            zf.write(os.path.join(stem_dir, stem_file), stem_file)
+    y, sr = librosa.load(input_path)
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    detected_bpm = int(np.round(tempo))
 
-    return send_file(zip_path, as_attachment=True, download_name="stems.zip")
+    stem_files = []
+    for stem_file in os.listdir(stem_dir):
+        old_path = os.path.join(stem_dir, stem_file)
+        name, ext = os.path.splitext(stem_file)
+        new_name = f"{name}_{detected_bpm}bpm{ext}"
+        new_path = os.path.join(stem_dir, new_name)
+        os.rename(old_path, new_path)
+        stem_files.append(os.path.abspath(new_path))
+
+    accept = request.headers.get("Accept", "")
+    if "application/json" in accept:
+        return jsonify({"stems": stem_files, "bpm": detected_bpm})
+    else:
+        zip_path = os.path.join(OUTPUT_FOLDER, uid + "_stems.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for stem_path in stem_files:
+                zf.write(stem_path, os.path.basename(stem_path))
+        return send_file(zip_path, as_attachment=True, download_name="stems.zip")
 
 
 @app.route("/instrumental", methods=["POST"])
@@ -103,6 +122,42 @@ def instrumental():
 
     return send_file(instrumental_path, as_attachment=True, download_name="instrumental.mp3")
 
+
+@app.route("/extract_midi", methods=["POST"])
+def extract_midi():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["file"]
+    uid = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_FOLDER, uid + "_" + file.filename)
+    file.save(input_path)
+
+    output_dir = os.path.join(OUTPUT_FOLDER, uid + "_midi")
+    os.makedirs(output_dir, exist_ok=True)
+
+    from basic_pitch.inference import predict
+    from basic_pitch import ICASSP_2022_MODEL_PATH
+
+
+    # Detect BPM automatically
+    y, sr = librosa.load(input_path)
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    detected_bpm = float(np.round(tempo))
+
+    print(f"Detected BPM: {detected_bpm}\n")
+
+    _, midi_data, _ = predict(input_path, ICASSP_2022_MODEL_PATH)
+
+    tempo_in_microseconds = 60000000 / detected_bpm
+    midi_fixed = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=detected_bpm)
+    for instrument in midi_data.instruments:
+        midi_fixed.instruments.append(instrument)
+
+    midi_path = os.path.join(output_dir, f"output_{int(detected_bpm)}bpm.mid")
+    midi_fixed.write(midi_path)
+
+    return jsonify({"midi": os.path.abspath(midi_path), "bpm": detected_bpm})
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
