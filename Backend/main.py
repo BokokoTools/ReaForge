@@ -8,7 +8,7 @@ import sys
 import librosa
 import pretty_midi
 import numpy as np
-
+import json
 app = Flask(__name__)
 CORS(app)
 
@@ -95,6 +95,26 @@ def chords_to_midi(chords, output_path, bpm, key=""):
     midi.instruments.append(inst)
     midi.write(output_path)
 
+def cleanup_old_files(max_age_minutes=5):
+    import time
+    now = time.time()
+    for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER]:
+        for root, dirs, files in os.walk(folder, topdown=False):
+            for f in files:
+                fpath = os.path.join(root, f)
+                if f.startswith('.reaforge'):
+                    continue
+                if os.path.getmtime(fpath) < now - (max_age_minutes * 60):
+                    try:
+                        os.remove(fpath)
+                    except:
+                        pass  # skip locked files
+            for d in dirs:
+                dpath = os.path.join(root, d)
+                try:
+                    os.rmdir(dpath)
+                except:
+                    pass
 
 # ---------------Enpoints-------------------
 @app.route("/")
@@ -105,6 +125,7 @@ def index():
 
 @app.route("/separate", methods=["POST"])
 def separate():
+    cleanup_old_files()
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     file = request.files["file"]
@@ -159,6 +180,7 @@ def separate():
 
 @app.route("/instrumental", methods=["POST"])
 def instrumental():
+    cleanup_old_files()
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     file = request.files["file"]
@@ -206,6 +228,7 @@ def instrumental():
 
 @app.route("/extract_midi", methods=["POST"])
 def extract_midi():
+    cleanup_old_files()
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -243,6 +266,7 @@ def extract_midi():
 
 @app.route("/chordmap", methods=["POST"])
 def chordmap():
+    cleanup_old_files()
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -266,6 +290,64 @@ def chordmap():
 
     return jsonify({"midi": os.path.abspath(midi_path),
                     "bpm": detected_bpm, "key": detected_key})
+
+
+@app.route("/vocal_clean", methods=["POST"])
+def vocal_clean():
+    cleanup_old_files()
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["file"]
+    uid = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_FOLDER, uid + "_" + file.filename)
+    file.save(input_path)
+
+    # Check mono preference
+    options_file = os.path.join(UPLOAD_FOLDER, ".reaforge_result.json")
+    force_mono = False
+    if os.path.exists(options_file):
+        with open(options_file) as f:
+            opts = json.load(f)
+        force_mono = opts.get("mono", False)
+        os.remove(options_file)
+
+    import noisereduce as nr
+    import soundfile as sf
+    import librosa
+
+    y, sr = librosa.load(input_path, sr=None, mono=False)
+
+    # For noise reduction, use mono version
+    y_mono = librosa.to_mono(y) if len(y.shape) > 1 else y
+    noise_sample = y_mono[:int(sr * 0.5)]
+    cleaned_mono = nr.reduce_noise(y=y_mono, sr=sr, y_noise=noise_sample, prop_decrease=0.8)
+
+    output_dir = os.path.join(OUTPUT_FOLDER, uid + "_vocalclean")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # After cleaning, apply mono if checked
+    # Apply to original channels
+    if force_mono or len(y.shape) == 1:
+        cleaned = cleaned_mono
+    else:
+        # Apply noise reduction to each channel separately
+        cleaned_ch1 = nr.reduce_noise(y=y[0], sr=sr, y_noise=y[0][:int(sr * 0.5)], prop_decrease=0.8)
+        cleaned_ch2 = nr.reduce_noise(y=y[1], sr=sr, y_noise=y[1][:int(sr * 0.5)], prop_decrease=0.8)
+        cleaned = np.array([cleaned_ch1, cleaned_ch2])
+
+    detected_key = detect_key(input_path)
+    tempo, _ = librosa.beat.beat_track(y=y_mono, sr=sr)
+    detected_bpm = int(np.round(tempo))
+
+    output_path = os.path.join(output_dir, f"vocals_clean_{detected_bpm}bpm_{detected_key}.wav")
+    sf.write(output_path, cleaned.T if len(cleaned.shape) > 1 else cleaned, int(sr), format='WAV', subtype='PCM_16')
+
+    return jsonify({
+        "audio": os.path.abspath(output_path),
+        "bpm": detected_bpm,
+        "key": detected_key
+    })
 
 
 if __name__ == "__main__":

@@ -118,6 +118,22 @@ class ReaForgePanel:
             )
             btn.pack(fill="x", pady=4)
 
+        # ── Options ──
+        options_frame = tk.Frame(self.root, bg="#1a1a1a", pady=4)
+        options_frame.pack(fill="x", padx=12)
+
+        self.mono_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            options_frame, text="Convert to Mono",
+            variable=self.mono_var,
+            font=("Courier New", 9),
+            fg="#888888", bg="#1a1a1a",
+            selectcolor="#222222",
+            activeforeground="#ffffff",
+            cursor="hand2"
+        ).pack(anchor="w")
+
+
         # ── Status ──
         status_frame = tk.Frame(self.root, bg="#111111", pady=8)
         status_frame.pack(fill="x", side="bottom")
@@ -141,9 +157,11 @@ class ReaForgePanel:
         self.result_data = result
         self.status_var.set(message)
         # Write result to temp file so ai_tools.py can read it
-        tmp = os.path.join(os.path.dirname(self.filepath), ".reaforge_result.json")
+        tmp = r"C:\Users\Bokoko\PycharmProjects\ReaForge\Backend\uploads\.reaforge_result.json"
         with open(tmp, "w") as f:
             json.dump(result, f)
+        # Close panel after 5 seconds
+        self.root.after(5000, self.root.destroy)
 
     def _on_error(self, msg):
         self.status_var.set(f"Error: {msg}")
@@ -164,7 +182,15 @@ class ReaForgePanel:
                    self._on_error, self.status_var)
 
     def vocal_clean(self):
-        self.status_var.set("VocalClean coming soon...")
+        # Write mono preference to temp file
+        tmp = os.path.join(os.path.dirname(self.filepath), ".reaforge_options.json")
+        with open(tmp, "w") as f:
+            json.dump({"mono": self.mono_var.get()}, f)
+
+        call_flask("vocal_clean", self.filepath,
+                   lambda r: self._on_success(r,
+                                              f"Vocals cleaned! BPM: {r.get('bpm', '?')} | Key: {r.get('key', '?')}"),
+                   self._on_error, self.status_var)
 
     def run(self):
         self.root.mainloop()

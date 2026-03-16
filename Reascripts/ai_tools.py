@@ -52,7 +52,23 @@ def import_files_to_reaper(file_paths):
             RPR_InsertMedia(path, 1)
         else:
             RPR_ShowConsoleMsg(f"ReaForge: File not found: {path}\n")
+def check_result():
+    tmp_result = RPR_GetExtState("ReaForge", "tmp_result")
+    if os.path.exists(tmp_result):
+        with open(tmp_result, "r") as f:
+            result = json.load(f)
+        os.remove(tmp_result)
 
+        if "stems" in result:
+            import_files_to_reaper(result["stems"])
+        elif "midi" in result:
+            import_files_to_reaper([result["midi"]])
+        elif "audio" in result:
+            import_files_to_reaper([result["audio"]])
+
+        RPR_ShowConsoleMsg("ReaForge: Imported!\n")
+
+    RPR_defer("check_result()")  # keep checking
 
 # ─────────────────────────────────────────────
 # FLASK COMMUNICATION
@@ -142,7 +158,7 @@ def chordmap(filepath):
 #--------- Open Dialog For which to execute ---------
 def open_panel(filepath):
     panel_script = r"C:\Users\Bokoko\PycharmProjects\ReaForge\Frontend\panel.py"
-    tmp_result = os.path.join(os.path.dirname(filepath), ".reaforge_result.json")
+    tmp_result = r"C:\Users\Bokoko\PycharmProjects\ReaForge\Backend\uploads\.reaforge_result.json"
 
     # Clean old result
     if os.path.exists(tmp_result):
@@ -154,24 +170,22 @@ def open_panel(filepath):
         panel_script, filepath
     ], creationflags=0x08000000)
 
-    # Poll for result file every 2 seconds (max 5 minutes)
     import time
-    for _ in range(150):
+    for _ in range(90):
         time.sleep(2)
+        RPR_UpdateArrange()  # lets Reaper breathe
         if os.path.exists(tmp_result):
             with open(tmp_result, "r") as f:
                 result = json.load(f)
             os.remove(tmp_result)
-
             if "stems" in result:
                 import_files_to_reaper(result["stems"])
             elif "midi" in result:
                 import_files_to_reaper([result["midi"]])
-
-            #RPR_ShowConsoleMsg("ReaForge: Imported into Reaper!\n")
+            elif "audio" in result:
+                import_files_to_reaper([result["audio"]])
             return
 
-    RPR_ShowConsoleMsg("ReaForge: Timed out waiting for panel.\n")
 
 # ─────────────────────────────────────────────
 # MAIN ENTRY POINT
