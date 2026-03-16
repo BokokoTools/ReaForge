@@ -45,8 +45,6 @@ def get_selected_track_file():
     source = RPR_GetMediaItemTake_Source(take)
     filename = RPR_GetMediaSourceFileName(source, "", 512)[1]
     return filename
-
-
 def import_files_to_reaper(file_paths):
     for path in file_paths:
         if os.path.exists(path):
@@ -59,35 +57,6 @@ def import_files_to_reaper(file_paths):
 # ─────────────────────────────────────────────
 # FLASK COMMUNICATION
 # ─────────────────────────────────────────────
-'''
-
-def call_flask(endpoint, payload):
-    """Send a POST request to the Flask backend and return the JSON response."""
-    url = f"{FLASK_URL}/{endpoint}"
-    data = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"}
-    )
-
-    try:
-        response = urllib.request.urlopen(req, timeout=120)
-        return json.loads(response.read())
-    except urllib.error.URLError:
-        RPR_ShowMessageBox(
-            "Cannot connect to ReaForge backend.\n\n"
-            "Make sure your Flask server is running:\n"
-            "  cd Backend\n"
-            "  python main.py",
-            "ReaForge — Connection Error", 0
-        )
-        return None
-    except Exception as e:
-        RPR_ShowMessageBox(f"Error: {str(e)}", "ReaForge", 0)
-        return None
-'''
 
 def call_flask(endpoint, filepath):
     import urllib.request
@@ -117,8 +86,6 @@ def call_flask(endpoint, filepath):
     )
     response = urllib.request.urlopen(req, timeout=300)
     return json.loads(response.read().decode('utf-8', errors='ignore'))
-
-
 def check_backend_running():
     """Check if Flask backend is reachable."""
     try:
@@ -141,15 +108,13 @@ def separate_stems(filepath):
     if result and "stems" in result:
         import_files_to_reaper(result["stems"])
         if "bpm" in result:
-            RPR_SetCurrentBPM(0, result["bpm"], True)
+            RPR_SetCurrentBPM(0, result["bpm"], False)
         RPR_ShowMessageBox(
             f"Done! {len(result['stems'])} stems imported into Reaper.",
             "ReaForge ✓", 0
         )
     else:
         RPR_ShowMessageBox("Stem separation failed. Check the Flask server log.", "ReaForge", 0)
-
-
 def extract_midi(filepath):
     """Send audio file to Flask for MIDI extraction, then import the .mid file."""
     RPR_ShowMessageBox("Extracting MIDI...\nThis may take a moment.", "ReaForge", 0)
@@ -158,12 +123,23 @@ def extract_midi(filepath):
     if result and "midi" in result:
         import_files_to_reaper([result["midi"]])
         if "bpm" in result:
-            RPR_SetCurrentBPM(0, result["bpm"], True)
+            RPR_SetCurrentBPM(0, result["bpm"], False)
         RPR_ShowMessageBox("Done! MIDI file imported into Reaper.", "ReaForge ✓", 0)
     else:
         RPR_ShowMessageBox("MIDI extraction failed. Check the Flask server log.", "ReaForge", 0)
+def chordmap(filepath):
+    RPR_ShowConsoleMsg("ReaForge: Detecting chords, please wait...\n")
+    result = call_flask("chordmap", filepath)
+    if result and "midi" in result:
+        import_files_to_reaper([result["midi"]])
+        RPR_ShowMessageBox(
+            f"Done! ChordMap imported.\nKey: {result.get('key','?')} | BPM: {result.get('bpm','?')}",
+            "ReaForge ✓", 0
+        )
+    else:
+        RPR_ShowMessageBox("ChordMap failed. Check the Flask server log.", "ReaForge", 0)
 
-
+#--------- Open Dialog For which to execute ---------
 def open_panel(filepath):
     """
     Launch the tkinter UI panel as a subprocess.
@@ -180,15 +156,16 @@ def open_panel(filepath):
     else:
         # Fallback: simple dialog if panel.py doesn't exist yet
         choice = RPR_ShowMessageBox(
-            "Choose an action:\n\n"
-            "OK  = Separate Stems\n"
-            "Cancel = Extract MIDI",
-            "ReaForge", 1
+            "What do you want to do?\n\nYes = Separate Stems\nNo = Extract MIDI\nCancel = ChordMap",
+            "ReaForge", 3
         )
-        if choice == 1:
+        # Yes = 6, No = 7, Cancel = 2
+        if choice == 6:
             separate_stems(filepath)
-        else:
+        elif choice == 7:
             extract_midi(filepath)
+        elif choice == 2:
+            chordmap(filepath)
 
 
 # ─────────────────────────────────────────────
@@ -208,6 +185,4 @@ def main():
         return
 
     open_panel(filepath)
-
-
 main()
