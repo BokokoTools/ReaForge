@@ -141,32 +141,37 @@ def chordmap(filepath):
 
 #--------- Open Dialog For which to execute ---------
 def open_panel(filepath):
-    """
-    Launch the tkinter UI panel as a subprocess.
-    The panel lets the user pick which tools to run with checkboxes.
-    Falls back to a simple message box if the panel script is not found.
-    """
-    panel_script = os.path.join(
-        os.path.dirname(os.path.abspath(__name__)),
-        "..", "Frontend", "panel.py"
-    )
+    panel_script = r"C:\Users\Bokoko\PycharmProjects\ReaForge\Frontend\panel.py"
+    tmp_result = os.path.join(os.path.dirname(filepath), ".reaforge_result.json")
 
-    if os.path.exists(panel_script):
-        subprocess.Popen([sys.executable, panel_script, filepath])
-    else:
-        # Fallback: simple dialog if panel.py doesn't exist yet
-        choice = RPR_ShowMessageBox(
-            "What do you want to do?\n\nYes = Separate Stems\nNo = Extract MIDI\nCancel = ChordMap",
-            "ReaForge", 3
-        )
-        # Yes = 6, No = 7, Cancel = 2
-        if choice == 6:
-            separate_stems(filepath)
-        elif choice == 7:
-            extract_midi(filepath)
-        elif choice == 2:
-            chordmap(filepath)
+    # Clean old result
+    if os.path.exists(tmp_result):
+        os.remove(tmp_result)
 
+    # Launch panel WITHOUT waiting
+    subprocess.Popen([
+        r"C:\Users\Bokoko\AppData\Local\Programs\Python\Python310\python.exe",
+        panel_script, filepath
+    ], creationflags=0x08000000)
+
+    # Poll for result file every 2 seconds (max 5 minutes)
+    import time
+    for _ in range(150):
+        time.sleep(2)
+        if os.path.exists(tmp_result):
+            with open(tmp_result, "r") as f:
+                result = json.load(f)
+            os.remove(tmp_result)
+
+            if "stems" in result:
+                import_files_to_reaper(result["stems"])
+            elif "midi" in result:
+                import_files_to_reaper([result["midi"]])
+
+            #RPR_ShowConsoleMsg("ReaForge: Imported into Reaper!\n")
+            return
+
+    RPR_ShowConsoleMsg("ReaForge: Timed out waiting for panel.\n")
 
 # ─────────────────────────────────────────────
 # MAIN ENTRY POINT
