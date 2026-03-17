@@ -350,5 +350,76 @@ def vocal_clean():
     })
 
 
+@app.route("/lyricsheet", methods=["POST"])
+def lyricsheet():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    cleanup_old_files()
+    file = request.files["file"]
+    uid = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_FOLDER, uid + "_" + file.filename)
+    file.save(input_path)
+
+    import whisper
+    model = whisper.load_model("base")
+    result = model.transcribe(input_path, word_timestamps=True)
+
+    # Build markers list with timestamps
+    markers = []
+    for segment in result["segments"]:
+        markers.append({
+            "time": segment["start"],
+            "text": segment["text"].strip()
+        })
+
+    return jsonify({"markers": markers, "full_text": result["text"]})
+
+
+@app.route("/loopfinder", methods=["POST"])
+def loopfinder():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    cleanup_old_files()
+    file = request.files["file"]
+    uid = str(uuid.uuid4())
+    input_path = os.path.join(UPLOAD_FOLDER, uid + "_" + file.filename)
+    file.save(input_path)
+
+    y, sr = librosa.load(input_path)
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+    detected_bpm = float(np.round(tempo))
+    beat_times = librosa.frames_to_time(beats, sr=sr)
+
+    # Find most energetic 8-bar section
+    seconds_per_bar = (60.0 / detected_bpm) * 4
+    loop_length = seconds_per_bar * 8  # 8 bars
+
+    # Analyze energy in windows
+    rms = librosa.feature.rms(y=y)[0]
+    times = librosa.times_like(rms, sr=sr)
+
+    best_start = 0
+    best_energy = 0
+
+    step = int(sr * seconds_per_bar)  # 1 bar steps
+    loop_samples = int(sr * loop_length)
+
+    for i in range(0, len(y) - loop_samples, step):
+        segment = y[i:i + loop_samples]
+        energy = float(np.mean(librosa.feature.rms(y=segment)))
+        if energy > best_energy:
+            best_energy = energy
+            best_start = i / sr
+
+    best_end = best_start + loop_length
+
+    return jsonify({
+        "loop_start": best_start,
+        "loop_end": best_end,
+        "bpm": detected_bpm,
+        "bars": 8
+    })
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
